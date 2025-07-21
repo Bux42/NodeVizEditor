@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Interactive Goal Visualizer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      body {
+        font-family: "Inter", sans-serif;
+        margin: 0;
+        overflow: hidden;
+        background-color: #111827; /* bg-gray-900 */
+      }
+      #canvas-container {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        cursor: grab;
+      }
+      .label {
+        color: #e5e7eb; /* text-gray-200 */
+        font-size: 14px;
+        padding: 4px 8px;
+        background-color: rgba(31, 41, 55, 0.7); /* bg-gray-800 with opacity */
+        border-radius: 8px;
+        pointer-events: none; /* Allows clicking through the label to the node */
+        user-select: none;
+        text-shadow: 0 0 5px black;
+      }
+      #ui-controls {
+        position: absolute;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        gap: 10px;
+        background-color: #1f2937; /* bg-gray-800 */
+        padding: 12px;
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        z-index: 10;
+      }
+      .control-btn {
+        background-color: #374151; /* bg-gray-700 */
+        color: #f9fafb; /* text-gray-50 */
+        border: none;
+        padding: 10px 15px;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background-color 0.2s;
+      }
+      .control-btn:hover {
+        background-color: #4b5563; /* bg-gray-600 */
+      }
+      .control-btn:disabled {
+        background-color: #4b5563; /* bg-gray-600 */
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      #modal {
+        background-color: #1f2937; /* bg-gray-800 */
+        padding: 24px;
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        width: 90%;
+        max-width: 400px;
+      }
+      #modal-input {
+        width: 100%;
+        padding: 10px;
+        border-radius: 8px;
+        border: 1px solid #4b5563; /* border-gray-600 */
+        background-color: #374151; /* bg-gray-700 */
+        color: #f9fafb; /* text-gray-50 */
+        margin-bottom: 16px;
+      }
+      #instructions {
+        position: absolute;
+        bottom: 20px;
+        left: 20px;
+        color: #9ca3af; /* text-gray-400 */
+        font-size: 12px;
+        background-color: rgba(31, 41, 55, 0.7);
+        padding: 8px;
+        border-radius: 8px;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="canvas-container"></div>
+
+    <div id="ui-controls">
+      <button id="add-node-btn" class="control-btn">Add Sub-Plan</button>
+      <button id="delete-node-btn" class="control-btn" disabled>
+        Delete Selected
+      </button>
+      <button id="save-btn" class="control-btn">Save</button>
+      <button id="load-btn" class="control-btn">Load</button>
+    </div>
+
+    <input type="file" id="file-input" class="hidden" accept=".json" />
+
+    <div id="instructions">
+      <p><strong>Left Click + Drag:</strong> Rotate</p>
+      <p><strong>Right Click + Drag:</strong> Pan</p>
+      <p><strong>Scroll:</strong> Zoom</p>
+      <p><strong>Click Node:</strong> Select</p>
+      <p><strong>Double Click Node:</strong> Edit</p>
+    </div>
+
+    <div
+      id="modal-backdrop"
+      class="hidden fixed top-0 left-0 w-full h-full bg-black/70 flex items-center justify-center z-20"
+    >
+      <div id="modal">
+        <h2 id="modal-title" class="text-lg font-semibold text-gray-100 mb-4">
+          Node Name
+        </h2>
+        <input type="text" id="modal-input" placeholder="Enter plan name..." />
+        <div class="flex justify-end gap-4">
+          <button id="modal-cancel" class="control-btn">Cancel</button>
+          <button id="modal-save" class="control-btn">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+
+    <script type="module">
+      import * as THREE from "three";
+      import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+      import {
+        CSS2DRenderer,
+        CSS2DObject,
+      } from "three/addons/renderers/CSS2DRenderer.js";
+
+      // --- Basic Setup ---
+      const container = document.getElementById("canvas-container");
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(
+        75,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000
+      );
+      camera.position.z = 30;
+
+      // --- Renderers ---
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(window.devicePixelRatio);
+      container.appendChild(renderer.domElement);
+
+      const labelRenderer = new CSS2DRenderer();
+      labelRenderer.setSize(window.innerWidth, window.innerHeight);
+      labelRenderer.domElement.style.position = "absolute";
+      labelRenderer.domElement.style.top = "0px";
+      labelRenderer.domElement.style.pointerEvents = "none"; // Pass events through
+      container.appendChild(labelRenderer.domElement);
+
+      // --- Lighting ---
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+      scene.add(ambientLight);
+      const pointLight = new THREE.PointLight(0xffffff, 1, 500);
+      pointLight.position.set(10, 10, 20);
+      scene.add(pointLight);
+
+      // --- Controls ---
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.minDistance = 5;
+      controls.maxDistance = 100;
+
+      // --- Data and Objects ---
+      let nodes = [];
+      let edges = [];
+      const nodeObjects = new THREE.Group();
+      const edgeObjects = new THREE.Group();
+      scene.add(nodeObjects, edgeObjects);
+
+      let selectedNode = null;
+      let editingNode = null;
+
+      // Colors
+      const NODE_COLOR = 0x7dd3fc; // sky-300
+      const SELECTED_NODE_COLOR = 0xf87171; // red-400
+      const EDGE_COLOR = 0x4b5563; // gray-600
+
+      // --- Core Functions ---
+      function addNode(label, options = {}) {
+        const {
+          parentNode = null,
+          position = null,
+          id = THREE.MathUtils.generateUUID(),
+        } = options;
+
+        // Create the visual sphere
+        const geometry = new THREE.SphereGeometry(1, 32, 16);
+        const material = new THREE.MeshStandardMaterial({
+          color: NODE_COLOR,
+          roughness: 0.5,
+        });
+        const sphere = new THREE.Mesh(geometry, material);
+
+        // Set initial position
+        if (position) {
+          sphere.position.copy(position);
+        } else if (parentNode) {
+          sphere.position.copy(parentNode.sphere.position);
+          sphere.position.x += (Math.random() - 0.5) * 10;
+          sphere.position.y += (Math.random() - 0.5) * 10;
+          sphere.position.z += (Math.random() - 0.5) * 10;
+        } else {
+          sphere.position.set(0, 0, 0);
+        }
+
+        // Create the text label
+        const labelDiv = document.createElement("div");
+        labelDiv.className = "label";
+        labelDiv.textContent = label;
+        const labelObject = new CSS2DObject(labelDiv);
+        labelObject.position.set(0, 1.5, 0); // Offset from sphere center
+        sphere.add(labelObject);
+
+        const node = {
+          id,
+          label,
+          sphere,
+          labelObject,
+          velocity: new THREE.Vector3(),
+          edges: [],
+        };
+
+        sphere.userData.node = node; // Link back from mesh to node data
+        nodes.push(node);
+        nodeObjects.add(sphere);
+
+        if (parentNode) {
+          addEdge(parentNode, node);
+        }
+
+        return node;
+      }
+
+      function addEdge(sourceNode, targetNode) {
+        const material = new THREE.LineBasicMaterial({
+          color: EDGE_COLOR,
+          linewidth: 1,
+        });
+        const points = [sourceNode.sphere.position, targetNode.sphere.position];
+        const geometry = new THREE.BufferGeometry().setFromPoints(points);
+        const line = new THREE.Line(geometry, material);
+
+        const edge = {
+          id: THREE.MathUtils.generateUUID(),
+          source: sourceNode,
+          target: targetNode,
+          line,
+        };
+
+        edges.push(edge);
+        edgeObjects.add(line);
+
+        sourceNode.edges.push(edge);
+        targetNode.edges.push(edge);
+      }
+
+      function deleteNode(nodeToDelete) {
+        if (!nodeToDelete) return;
+
+        // Remove connected edges
+        const remainingEdges = [];
+        edges.forEach((edge) => {
+          if (edge.source === nodeToDelete || edge.target === nodeToDelete) {
+            edgeObjects.remove(edge.line);
+            edge.line.geometry.dispose();
+            edge.line.material.dispose();
+          } else {
+            remainingEdges.push(edge);
+          }
+        });
+        edges = remainingEdges;
+
+        // Remove from other nodes' edge lists
+        nodes.forEach((node) => {
+          node.edges = node.edges.filter(
+            (edge) =>
+              edge.source !== nodeToDelete && edge.target !== nodeToDelete
+          );
+        });
+
+        // Remove node itself
+        // **FIX**: Explicitly remove the label from the sphere to ensure the DOM element is cleaned up.
+        if (nodeToDelete.labelObject) {
+          nodeToDelete.sphere.remove(nodeToDelete.labelObject);
+        }
+        nodeObjects.remove(nodeToDelete.sphere);
+        nodeToDelete.sphere.geometry.dispose();
+        nodeToDelete.sphere.material.dispose();
+        nodes = nodes.filter((n) => n.id !== nodeToDelete.id);
+
+        if (selectedNode === nodeToDelete) {
+          setSelectedNode(null);
+        }
+      }
+
+      function updateNodeLabel(node, newLabel) {
+        node.label = newLabel;
+        node.labelObject.element.textContent = newLabel;
+      }
+
+      function setSelectedNode(node) {
+        // Deselect previous
+        if (selectedNode) {
+          selectedNode.sphere.material.color.set(NODE_COLOR);
+        }
+
+        selectedNode = node;
+
+        // Select new
+        if (selectedNode) {
+          selectedNode.sphere.material.color.set(SELECTED_NODE_COLOR);
+          document.getElementById("delete-node-btn").disabled = false;
+        } else {
+          document.getElementById("delete-node-btn").disabled = true;
+        }
+      }
+
+      // --- Physics Simulation ---
+      const forceParams = {
+        repulsion: 20,
+        attraction: 0.03,
+        damping: 0.95,
+        idealLength: 15,
+      };
+
+      function updatePhysics() {
+        // Reset forces
+        nodes.forEach((node) => (node.force = new THREE.Vector3()));
+
+        // Repulsion force
+        for (let i = 0; i < nodes.length; i++) {
+          for (let j = i + 1; j < nodes.length; j++) {
+            const nodeA = nodes[i];
+            const nodeB = nodes[j];
+            const direction = new THREE.Vector3().subVectors(
+              nodeA.sphere.position,
+              nodeB.sphere.position
+            );
+            const distanceSq = direction.lengthSq();
+            if (distanceSq > 0.1) {
+              const strength = forceParams.repulsion / distanceSq;
+              direction.normalize().multiplyScalar(strength);
+              nodeA.force.add(direction);
+              nodeB.force.sub(direction);
+            }
+          }
+        }
+
+        // Attraction force (springs)
+        edges.forEach((edge) => {
+          const { source, target } = edge;
+          const direction = new THREE.Vector3().subVectors(
+            target.sphere.position,
+            source.sphere.position
+          );
+          const distance = direction.length();
+          const displacement = distance - forceParams.idealLength;
+          const strength = forceParams.attraction * displacement;
+          direction.normalize().multiplyScalar(strength);
+          source.force.add(direction);
+          target.force.sub(direction);
+        });
+
+        // Update positions
+        nodes.forEach((node) => {
+          if (node === draggedNode) return; // Don't apply physics to dragged node
+          node.velocity.add(node.force);
+          node.velocity.multiplyScalar(forceParams.damping);
+          node.sphere.position.add(node.velocity);
+        });
+
+        // Update edge geometries
+        edges.forEach((edge) => {
+          const positions = edge.line.geometry.attributes.position;
+          positions.setXYZ(
+            0,
+            edge.source.sphere.position.x,
+            edge.source.sphere.position.y,
+            edge.source.sphere.position.z
+          );
+          positions.setXYZ(
+            1,
+            edge.target.sphere.position.x,
+            edge.target.sphere.position.y,
+            edge.target.sphere.position.z
+          );
+          positions.needsUpdate = true;
+        });
+      }
+
+      // --- Interactivity ---
+      const raycaster = new THREE.Raycaster();
+      const pointer = new THREE.Vector2();
+      let draggedNode = null;
+
+      function onPointerDown(event) {
+        if (event.target !== renderer.domElement) return;
+
+        pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+        pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+        raycaster.setFromCamera(pointer, camera);
+        const intersects = raycaster.intersectObjects(nodeObjects.children);
+
+        if (intersects.length > 0) {
+          controls.enabled = false; // Disable camera controls when dragging a node
+          draggedNode = intersects[0].object.userData.node;
+          container.style.cursor = "grabbing";
+        }
+      }
+
+      function onPointerMove(event) {
+        if (draggedNode) {
+          pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+          pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+          const plane = new THREE.Plane(
+            camera.getWorldDirection(new THREE.Vector3()),
+            -draggedNode.sphere.position
+              .clone()
+              .dot(camera.getWorldDirection(new THREE.Vector3()))
+          );
+          raycaster.setFromCamera(pointer, camera);
+          const intersectionPoint = new THREE.Vector3();
+          raycaster.ray.intersectPlane(plane, intersectionPoint);
+
+          if (intersectionPoint) {
+            draggedNode.sphere.position.copy(intersectionPoint);
+            draggedNode.velocity.set(0, 0, 0); // Stop physics movement
+          }
+        }
+      }
+
+      function onPointerUp() {
+        if (draggedNode) {
+          draggedNode = null;
+          controls.enabled = true;
+          container.style.cursor = "grab";
+        }
+      }
+
+      function onClick(event) {
+        if (event.target !== renderer.domElement) return;
+        if (controls.target.clone().sub(controls.target0).lengthSq() > 0.01)
+          return;
+
+        pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+        pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+        raycaster.setFromCamera(pointer, camera);
+        const intersects = raycaster.intersectObjects(nodeObjects.children);
+
+        if (intersects.length > 0) {
+          const clickedNode = intersects[0].object.userData.node;
+          setSelectedNode(clickedNode);
+        } else {
+          setSelectedNode(null);
+        }
+      }
+
+      function onDoubleClick(event) {
+        if (event.target !== renderer.domElement) return;
+
+        pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+        pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+        raycaster.setFromCamera(pointer, camera);
+        const intersects = raycaster.intersectObjects(nodeObjects.children);
+
+        if (intersects.length > 0) {
+          editingNode = intersects[0].object.userData.node;
+          showEditModal(editingNode.label);
+        }
+      }
+
+      // --- Modal ---
+      const modalBackdrop = document.getElementById("modal-backdrop");
+      const modalTitle = document.getElementById("modal-title");
+      const modalInput = document.getElementById("modal-input");
+
+      function showEditModal(currentLabel) {
+        modalTitle.textContent = editingNode
+          ? "Edit Plan Name"
+          : "Add New Sub-Plan";
+        modalInput.value = editingNode ? currentLabel : "";
+        modalBackdrop.classList.remove("hidden");
+        modalInput.focus();
+        modalInput.select();
+      }
+
+      function hideModal() {
+        modalBackdrop.classList.add("hidden");
+        editingNode = null;
+      }
+
+      document.getElementById("modal-save").addEventListener("click", () => {
+        const newLabel = modalInput.value.trim();
+        if (newLabel) {
+          if (editingNode) {
+            updateNodeLabel(editingNode, newLabel);
+          } else {
+            const newNode = addNode(newLabel, {
+              parentNode: selectedNode || nodes[0],
+            });
+            setSelectedNode(newNode);
+          }
+        }
+        hideModal();
+      });
+
+      document
+        .getElementById("modal-cancel")
+        .addEventListener("click", hideModal);
+      modalInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") document.getElementById("modal-save").click();
+        if (e.key === "Escape") hideModal();
+      });
+
+      // --- Save/Load Functionality ---
+      function saveGraph() {
+        const graphData = {
+          nodes: nodes.map((node) => ({
+            id: node.id,
+            label: node.label,
+            position: node.sphere.position,
+          })),
+          edges: edges.map((edge) => ({
+            sourceId: edge.source.id,
+            targetId: edge.target.id,
+          })),
+        };
+
+        const jsonString = JSON.stringify(graphData, null, 2);
+        const blob = new Blob([jsonString], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "goal-map.json";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
+      function loadGraph(jsonString) {
+        try {
+          const graphData = JSON.parse(jsonString);
+          clearGraph();
+
+          const nodeMap = new Map();
+
+          graphData.nodes.forEach((nodeData) => {
+            const newNode = addNode(nodeData.label, {
+              id: nodeData.id,
+              position: new THREE.Vector3(
+                nodeData.position.x,
+                nodeData.position.y,
+                nodeData.position.z
+              ),
+            });
+            nodeMap.set(nodeData.id, newNode);
+          });
+
+          graphData.edges.forEach((edgeData) => {
+            const sourceNode = nodeMap.get(edgeData.sourceId);
+            const targetNode = nodeMap.get(edgeData.targetId);
+            if (sourceNode && targetNode) {
+              addEdge(sourceNode, targetNode);
+            }
+          });
+        } catch (error) {
+          console.error("Failed to load or parse graph file:", error);
+          // Not using alert() as per instructions
+        }
+      }
+
+      function clearGraph() {
+        setSelectedNode(null);
+
+        // Dispose of all objects and clear arrays
+        while (edges.length > 0) {
+          const edge = edges.pop();
+          edgeObjects.remove(edge.line);
+          edge.line.geometry.dispose();
+          edge.line.material.dispose();
+        }
+
+        while (nodes.length > 0) {
+          const node = nodes.pop();
+          // **FIX**: Explicitly remove the label from the sphere to ensure the DOM element is cleaned up.
+          if (node.labelObject) {
+            node.sphere.remove(node.labelObject);
+          }
+          nodeObjects.remove(node.sphere);
+          node.sphere.geometry.dispose();
+          node.sphere.material.dispose();
+        }
+      }
+
+      // --- UI Event Listeners ---
+      document.getElementById("add-node-btn").addEventListener("click", () => {
+        if (!selectedNode && nodes.length > 0) {
+          setSelectedNode(nodes[0]); // Default to root if nothing is selected
+        }
+        showEditModal("");
+      });
+
+      document
+        .getElementById("delete-node-btn")
+        .addEventListener("click", () => {
+          if (selectedNode && nodes.length > 1) {
+            // Prevent deleting the last node
+            deleteNode(selectedNode);
+          }
+        });
+
+      document.getElementById("save-btn").addEventListener("click", saveGraph);
+
+      const fileInput = document.getElementById("file-input");
+      document
+        .getElementById("load-btn")
+        .addEventListener("click", () => fileInput.click());
+      fileInput.addEventListener("change", (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          loadGraph(e.target.result);
+          fileInput.value = ""; // Reset input so you can load the same file again
+        };
+        reader.readAsText(file);
+      });
+
+      // --- Window Resize ---
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        labelRenderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      // --- Event Listeners ---
+      renderer.domElement.addEventListener("pointerdown", onPointerDown);
+      renderer.domElement.addEventListener("pointermove", onPointerMove);
+      renderer.domElement.addEventListener("pointerup", onPointerUp);
+      renderer.domElement.addEventListener("click", onClick);
+      renderer.domElement.addEventListener("dblclick", onDoubleClick);
+
+      // --- Animation Loop ---
+      function animate() {
+        requestAnimationFrame(animate);
+        controls.update(); // For damping
+        updatePhysics();
+        renderer.render(scene, camera);
+        labelRenderer.render(scene, camera);
+      }
+
+      // --- Initial State ---
+      const rootNode = addNode("Main Goal");
+      setSelectedNode(rootNode);
+      animate();
+    </script>
+  </body>
+</html>
